@@ -586,6 +586,84 @@
     return { expr: render(tokens) };
   }
 
+  function topLevelWordAt(tokens, words) {
+    let depth = 0;
+    for (let i = 0; i < tokens.length; i++) {
+      const t = tokens[i];
+      if (t.t === 'punct' && t.v === '(') depth++;
+      if (t.t === 'punct' && t.v === ')') depth--;
+      if (depth === 0 && t.t === 'word' && words.includes(t.u)) return i;
+    }
+    return -1;
+  }
+
+  const formatValue = (v) => (typeof v === 'string' ? `'${v}'` : v && typeof v === 'object' ? v.expr : String(v));
+
+  // Reads the rows of the two seed shapes that don't use INSERT ... VALUES:
+  //   SELECT 'a', 1                                      (one row of literals)
+  //   SELECT t.id, f.name FROM (VALUES ('x', 'y'), ...) AS f (type_name, name)
+  //     JOIN some_table t ON t.name = f.type_name        (a list of rows, with lookups)
+  // Returns null for any other query.
+  function selectRows(tokens) {
+    const fromAt = topLevelWordAt(tokens, ['FROM']);
+    if (fromAt === -1) {
+      const end = topLevelWordAt(tokens, ['ON', 'RETURNING', 'WHERE']);
+      return [splitTopLevel(end === -1 ? tokens : tokens.slice(0, end)).map(literalValue)];
+    }
+    const items = splitTopLevel(tokens.slice(0, fromAt));
+    const c = new Cursor(tokens.slice(fromAt + 1));
+    if (!c.isPunct('(')) return null;
+    const inner = new Cursor(readParenGroup(c));
+    if (!inner.accept('VALUES')) return null;
+    const rows = [];
+    while (inner.isPunct('(')) {
+      rows.push(splitTopLevel(readParenGroup(inner)).map(literalValue));
+      if (!inner.acceptPunct(',')) break;
+    }
+    if (!rows.length) return null;
+    c.accept('AS');
+    const alias = c.peek() && c.peek().t !== 'punct' ? identValue(c.next()) : null;
+    const valueCols = c.isPunct('(') ? readIdentList(c) : rows[0].map((_, i) => 'column' + (i + 1));
+
+    // JOIN other_table alias ON alias.col = valuesAlias.col: remember how to describe the lookup.
+    const joins = new Map();
+    const rest = c.rest();
+    for (let i = 0; i < rest.length; i++) {
+      if (!(rest[i].t === 'word' && rest[i].u === 'JOIN')) continue;
+      const jc = new Cursor(rest.slice(i + 1));
+      const jt = readName(jc);
+      jc.accept('AS');
+      const ja = identValue(jc.next());
+      if (!jc.accept('ON')) continue;
+      const cond = jc.rest();
+      const lookups = [];
+      for (let k = 0; k + 6 < cond.length; k++) {
+        const [a, d1, b, eq, x, d2, y] = cond.slice(k, k + 7);
+        if (!(d1.v === '.' && eq.v === '=' && d2.v === '.')) continue;
+        const left = { q: identValue(a), col: identValue(b) };
+        const right = { q: identValue(x), col: identValue(y) };
+        if (left.q === ja && right.q === alias) lookups.push({ col: left.col, from: right.col });
+        else if (right.q === ja && left.q === alias) lookups.push({ col: right.col, from: left.col });
+      }
+      joins.set(ja, { table: tableKey(jt), lookups });
+    }
+
+    return rows.map((row) =>
+      items.map((item) => {
+        const qualified = item.length === 3 && item[1].v === '.';
+        const q = qualified ? identValue(item[0]) : null;
+        const col = qualified ? identValue(item[2]) : item.length === 1 && item[0].t !== 'string' && item[0].t !== 'number' ? identValue(item[0]) : null;
+        if (col !== null && (q === alias || (!q && valueCols.includes(col))) && valueCols.includes(col)) return row[valueCols.indexOf(col)];
+        const join = q && joins.get(q);
+        if (join && join.lookups.length) {
+          const where = join.lookups.map((l) => `${l.col} = ${formatValue(row[valueCols.indexOf(l.from)])}`).join(' and ');
+          return { expr: `${join.table}.${col} where ${where}` };
+        }
+        return literalValue(item);
+      })
+    );
+  }
+
   function parseInsert(cur, ctx) {
     const key = tableKey(readName(cur));
     if (cur.accept('AS')) cur.next();
@@ -599,8 +677,17 @@
       return;
     }
     if (!cur.accept('VALUES')) {
-      table.queryInserts++;
-      return ctx.warn(`INSERT INTO ${key} copies rows from a query, so they can't be listed`);
+      const rows = cur.accept('SELECT') ? selectRows(cur.rest()) : null;
+      if (!rows) {
+        table.queryInserts++;
+        return ctx.warn(`INSERT INTO ${key} copies rows from a query, so they can't be listed`);
+      }
+      for (const values of rows) {
+        const row = {};
+        columns.forEach((c, i) => { if (i < values.length) row[c] = values[i]; });
+        table.rows.push({ file: ctx.file, values: row });
+      }
+      return;
     }
     while (cur.isPunct('(')) {
       const values = splitTopLevel(readParenGroup(cur)).map(literalValue);
@@ -618,6 +705,8 @@
     const kept = [];
     const copies = [];
     for (let i = 0; i < lines.length; i++) {
+      // psql commands (\set, \ir, \connect, ...) aren't SQL and have no semicolon.
+      if (/^\s*\\/.test(lines[i])) { kept.push(''); continue; }
       const m = /^\s*COPY\s+([^\s(]+)\s*(?:\(([^)]*)\))?\s*FROM\s+stdin\b[^;]*;\s*$/i.exec(lines[i]);
       if (!m) { kept.push(lines[i]); continue; }
       const rows = [];
@@ -643,16 +732,17 @@
 
   // ---------- Project ----------
 
-  function handleStatement(toks, ctx) {
+  function handleStatement(toks, ctx, inDoBlock) {
     const cur = new Cursor(toks);
     while (cur.accept('BEGIN')); // statements inside DO $$ BEGIN ... END $$ blocks
     if (cur.isWord('INSERT')) {
-      ctx.deferred.push({ file: ctx.file, toks: cur.rest() });
+      // Inserts inside DO blocks are program logic (usually with variables), not seed rows.
+      if (!inDoBlock) ctx.deferred.push({ file: ctx.file, toks: cur.rest() });
       return;
     }
     if (cur.accept('DO')) {
       const body = cur.rest().find((t) => t.t === 'string');
-      if (body) for (const st of splitStatements(tokenize(body.v))) handleStatement(st, ctx);
+      if (body) for (const st of splitStatements(tokenize(body.v))) handleStatement(st, ctx, true);
       return;
     }
     if (cur.accept('CREATE')) {
@@ -675,6 +765,15 @@
       return;
     }
     if (cur.accept('COMMENT', 'ON')) return parseComment(cur, ctx);
+  }
+
+  function transactionKind(toks) {
+    if (!toks.every((t) => t.t === 'word')) return null;
+    const w = toks.map((t) => t.u);
+    if ((w[0] === 'BEGIN' && w.length <= 2) || (w[0] === 'START' && w[1] === 'TRANSACTION')) return 'begin';
+    if (w[0] === 'COMMIT' || (w[0] === 'END' && w.length <= 2)) return 'commit';
+    if ((w[0] === 'ROLLBACK' && !w.includes('TO')) || w[0] === 'ABORT') return 'rollback';
+    return null;
   }
 
   function safely(ctx, toks, fn) {
@@ -728,11 +827,24 @@
       warn(message) { this.warnings.push({ file: this.file, message }); },
     };
     const copies = [];
+    const run = (st) => safely(ctx, st, () => handleStatement(st, ctx, false));
     for (const f of files) {
       ctx.file = f.path;
       const extracted = extractCopyBlocks(f.text);
       for (const cp of extracted.copies) copies.push({ file: f.path, copy: cp });
-      for (const st of splitStatements(tokenize(extracted.text))) safely(ctx, st, () => handleStatement(st, ctx));
+      // Statements inside BEGIN ... ROLLBACK (test scripts, for example) leave nothing behind.
+      let inTransaction = null;
+      for (const st of splitStatements(tokenize(extracted.text))) {
+        const kind = transactionKind(st);
+        if (kind === 'begin') inTransaction = [];
+        else if (kind === 'commit') {
+          (inTransaction || []).forEach(run);
+          inTransaction = null;
+        } else if (kind === 'rollback') inTransaction = null;
+        else if (inTransaction) inTransaction.push(st);
+        else run(st);
+      }
+      (inTransaction || []).forEach(run);
     }
     for (const d of ctx.deferred) {
       ctx.file = d.file;

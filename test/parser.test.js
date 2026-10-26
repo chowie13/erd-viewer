@@ -142,6 +142,50 @@ ALTER TABLE public.settings OWNER TO app;`);
   ]);
 });
 
+test('reads seed rows from INSERT ... SELECT with a VALUES list', () => {
+  const m = parse(`
+    CREATE TABLE kinds (id serial PRIMARY KEY, name text UNIQUE, created_by int);
+    CREATE TABLE fields (id serial PRIMARY KEY, kind_id int REFERENCES kinds, name text, unit text);
+    INSERT INTO kinds (name) SELECT 'Feed' ON CONFLICT DO NOTHING;
+    INSERT INTO fields (kind_id, name, unit)
+    SELECT k.id, f.name, f.unit
+    FROM (VALUES
+      ('Feed', 'PPM', 'ppm'),
+      ('Water', 'Quantity', NULL)
+    ) AS f (kind_name, name, unit)
+    JOIN kinds k ON k.name = f.kind_name AND k.created_by IS NULL
+    ON CONFLICT (kind_id, name) DO NOTHING;`);
+  assert.deepEqual(table(m, 'kinds').rows[0].values, { name: 'Feed' });
+  assert.deepEqual(table(m, 'fields').rows.map((r) => r.values), [
+    { kind_id: { expr: "kinds.id where name = 'Feed'" }, name: 'PPM', unit: 'ppm' },
+    { kind_id: { expr: "kinds.id where name = 'Water'" }, name: 'Quantity', unit: null },
+  ]);
+  assert.deepEqual(m.warnings, []);
+});
+
+test('ignores test scripts that roll back, inserts in DO blocks and psql commands', () => {
+  const m = parseProject([
+    { path: '01_schema.sql', text: '\\set ON_ERROR_STOP on\nCREATE TABLE users (id serial PRIMARY KEY, name text);\nINSERT INTO users (name) VALUES (\'system\');' },
+    {
+      path: 'checks.sql',
+      text: `\\set ON_ERROR_STOP on
+BEGIN;
+INSERT INTO users (name) VALUES ('test user');
+CREATE TABLE scratch (id int);
+DO $$
+DECLARE sam int;
+BEGIN
+  INSERT INTO users (name) VALUES ('sam') RETURNING id INTO sam;
+END $$;
+ROLLBACK;`,
+    },
+    { path: 'install.sql', text: '\\ir 01_schema.sql\n' },
+  ]);
+  assert.deepEqual(table(m, 'users').rows.map((r) => r.values.name), ['system']);
+  assert.equal(table(m, 'scratch'), undefined);
+  assert.deepEqual(m.warnings, []);
+});
+
 test('reports problems without stopping', () => {
   const m = parse(`ALTER TABLE ghost ADD COLUMN x int; INSERT INTO nowhere VALUES (1); CREATE TABLE ok (id int);`);
   assert.ok(table(m, 'ok'));
