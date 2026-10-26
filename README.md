@@ -8,9 +8,11 @@ See a Postgres database as an entity relationship diagram by reading a project's
 
 Your files are read in the browser and never uploaded.
 
+**Open it:** https://chowie13.github.io/erd-viewer/ (GitHub Pages, rebuilt from `main` on every push)
+
 ## Using it
 
-Open `index.html` (or the hosted copy), then:
+Open the site link above (or `index.html` locally), then:
 
 - **On a computer:** choose **Open → Choose a project folder**. Every `.sql` file in it is read, skipping `node_modules` and hidden folders. In Chrome and Edge, **Reload** re-reads the folder after you change a migration.
 - **On a phone:** choose **Open → Choose .sql files** and select them from Files, OneDrive, Google Drive or another app.
