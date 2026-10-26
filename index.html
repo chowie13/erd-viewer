@@ -47,13 +47,14 @@
 
       <section id="empty" class="empty">
         <h1>See your database as a diagram</h1>
-        <p>Open a project's <code>.sql</code> files (migrations, schema, seed data). ERD Viewer reads the Postgres <code>CREATE TABLE</code>, <code>ALTER TABLE</code> and <code>INSERT</code> statements and draws the tables and how they connect.</p>
+        <p>Open a project's <code>.sql</code> files (migrations, schema, seed data), from this device or a GitHub repo. ERD Viewer reads the Postgres <code>CREATE TABLE</code>, <code>ALTER TABLE</code> and <code>INSERT</code> statements and draws the tables and how they connect.</p>
         <div class="open-choices">
           <button class="btn primary" type="button" data-open="folder">Choose a project folder</button>
           <button class="btn" type="button" data-open="files">Choose .sql files</button>
+          <button class="btn" type="button" data-open="github">Open from GitHub</button>
           <button class="btn" type="button" data-open="sample">Try the sample</button>
         </div>
-        <p class="hint">Your files stay on this device. Nothing is uploaded. On a phone, use “Choose .sql files” and pick them from Files, OneDrive or another app.</p>
+        <p class="hint">Files are read in your browser and never uploaded. On a phone, use “Open from GitHub”, or “Choose .sql files” to pick them from Files or OneDrive.</p>
       </section>
     </main>
 
@@ -68,9 +69,52 @@
     <div class="open-choices stacked">
       <button class="btn primary" type="button" data-open="folder">Choose a project folder</button>
       <button class="btn" type="button" data-open="files">Choose .sql files</button>
+      <button class="btn" type="button" data-open="github">Open from GitHub</button>
       <button class="btn" type="button" data-open="sample">Try the sample</button>
     </div>
-    <p class="hint">Every <code>.sql</code> file is read in name order (so numbered migrations run in sequence). <code>node_modules</code> and hidden folders are skipped. Files stay on this device.</p>
+    <p class="hint">Every <code>.sql</code> file is read in name order (so numbered migrations run in sequence). <code>node_modules</code> and hidden folders are skipped. Files are read in your browser and never uploaded.</p>
+  </dialog>
+
+  <dialog id="githubDialog" class="dialog wide">
+    <form method="dialog" class="dialog-head">
+      <h2>Open from GitHub</h2>
+      <button class="btn icon-btn" aria-label="Close">✕</button>
+    </form>
+    <form id="githubForm" class="gh-form">
+      <label class="field">
+        <span>Repo or folder link</span>
+        <input id="ghUrl" type="text" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="github.com/owner/repo/tree/main/db" required>
+      </label>
+      <p class="hint">Paste a repo link, or a folder link from GitHub's address bar. Every <code>.sql</code> file in that folder and its subfolders is read.</p>
+
+      <div id="ghTokenSaved" class="token-saved" hidden>
+        <span>A GitHub token is saved on this device, for private repos.</span>
+        <button type="button" class="link" id="ghForget">Forget it</button>
+      </div>
+      <div id="ghTokenEntry">
+        <label class="field">
+          <span>Access token <span class="muted">(only needed for private repos)</span></span>
+          <input id="ghToken" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="github_pat_…">
+        </label>
+        <label class="check"><input id="ghRemember" type="checkbox" checked> Remember it on this device</label>
+        <details class="token-help">
+          <summary>How to make a read-only token</summary>
+          <ol>
+            <li>Open <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">GitHub → Settings → Developer settings → Fine-grained tokens → Generate new token</a>.</li>
+            <li>Name it “ERD Viewer” and pick an expiration date.</li>
+            <li>Under <b>Repository access</b>, choose <b>Only select repositories</b> and pick the repos you want to view.</li>
+            <li>Under <b>Permissions → Repository permissions</b>, set <b>Contents</b> to <b>Read-only</b>.</li>
+            <li>Click <b>Generate token</b>, copy it and paste it above.</li>
+          </ol>
+          <p>The token stays in this browser and is sent only to GitHub. Anyone using this browser could use it to read those repos, so give it access only to the repos you need.</p>
+        </details>
+      </div>
+
+      <p id="ghStatus" class="gh-status" role="status"></p>
+      <div class="dialog-actions">
+        <button id="ghSubmit" class="btn primary" type="submit">Open</button>
+      </div>
+    </form>
   </dialog>
 
   <dialog id="filesDialog" class="dialog wide">
@@ -88,6 +132,7 @@
   <input id="filesInput" type="file" multiple hidden>
 
   <script src="js/parser.js"></script>
+  <script src="js/github.js"></script>
   <script src="js/sample.js"></script>
   <script src="js/app.js"></script>
 </body>

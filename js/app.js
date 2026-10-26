@@ -20,10 +20,12 @@
 
   const STORE_PROJECT = 'erd-viewer:project';
   const STORE_FILTER = 'erd-viewer:filter';
+  const STORE_TOKEN = 'erd-viewer:github-token';
+  const STORE_GITHUB_LINK = 'erd-viewer:github-link';
   const layoutKey = (name) => 'erd-viewer:layout:' + name;
 
   const state = {
-    project: null, // { name, files: [{ path, text, include }] }
+    project: null, // { name, source, files: [{ path, text, include }] }; source is { type: 'github', link } or null
     model: null,
     byKey: new Map(),
     pos: {},
@@ -33,6 +35,7 @@
     search: '',
     view: { x: 0, y: 0, k: 1 },
     dirHandle: null,
+    token: null, // a token typed this visit but not remembered
   };
 
   // ---------- Small helpers ----------
@@ -91,12 +94,13 @@
     }));
   }
 
-  function openProject(name, files) {
+  function openProject(name, files, source = null) {
     if (!files.length) {
       toast('No .sql files found there.');
       return;
     }
-    const project = { name, files: prepareFiles(files) };
+    setLinkParam(source ? source.link : null);
+    const project = { name, source, files: prepareFiles(files) };
     if (!save(STORE_PROJECT, project)) toast('Loaded. This project is too big to remember after you close the page.');
     showProject(project);
   }
@@ -150,12 +154,13 @@
     }
   }
 
-  async function reloadFolder() {
+  async function reload() {
+    if (state.project && state.project.source) return loadFromGitHub(state.project.source.link, { reload: true });
     const handle = state.dirHandle;
     if (!handle) return;
     try {
       const files = await readDirectory(handle, '');
-      state.project = { name: handle.name, files: prepareFiles(files, state.project.files) };
+      state.project = { name: handle.name, source: null, files: prepareFiles(files, state.project.files) };
       save(STORE_PROJECT, state.project);
       rebuild();
       toast(`Reloaded ${plural(files.length, 'file')}.`);
@@ -183,9 +188,104 @@
     openProject(name, files);
   }
 
+  // ---------- GitHub ----------
+
+  const savedToken = () => load(STORE_TOKEN);
+
+  // Puts ?github=<link> in the address bar, so a GitHub project can be bookmarked or
+  // added to a phone's home screen and opens straight away next time.
+  function setLinkParam(link) {
+    try {
+      // Built by hand so the slashes stay readable: ?github=github.com/owner/repo/tree/main/db
+      const query = link ? '?github=' + link.split('/').map(encodeURIComponent).join('/') : '';
+      history.replaceState(null, '', location.pathname + query + location.hash);
+    } catch {
+      // file:// pages can't always change their address; nothing to do
+    }
+  }
+
+  function setGitHubStatus(message, isError) {
+    const el = $('ghStatus');
+    el.textContent = message || '';
+    el.classList.toggle('error', !!isError);
+  }
+
+  function openGitHubDialog(link, error) {
+    const hasSaved = !!savedToken();
+    $('ghTokenSaved').hidden = !hasSaved;
+    $('ghTokenEntry').hidden = hasSaved;
+    $('ghToken').value = '';
+    $('ghUrl').value = link || load(STORE_GITHUB_LINK) || '';
+    setGitHubStatus(error || '', !!error);
+    $('ghSubmit').disabled = false;
+    $('openDialog').close();
+    if (!$('githubDialog').open) $('githubDialog').showModal();
+    if (!$('ghUrl').value) $('ghUrl').focus();
+  }
+
+  async function loadFromGitHub(link, opts = {}) {
+    const token = opts.token || state.token || savedToken();
+    const inDialog = $('githubDialog').open;
+    const report = (message) => (inDialog ? setGitHubStatus(message) : null);
+    $('ghSubmit').disabled = true;
+    report('Connecting to GitHub…');
+    if (!inDialog) toast(opts.reload ? 'Reloading from GitHub…' : 'Opening from GitHub…');
+    try {
+      const result = await window.ErdGitHub.loadFolder(link, {
+        token,
+        onProgress: (done, total) => report(`Reading ${done} of ${plural(total, 'file')}…`),
+      });
+      if (opts.remember) save(STORE_TOKEN, opts.token);
+      else if (opts.token) state.token = opts.token;
+      save(STORE_GITHUB_LINK, result.link);
+      state.dirHandle = null;
+      const source = { type: 'github', link: result.link };
+      if (opts.reload && state.project) {
+        state.project = { name: result.name, source, files: prepareFiles(result.files, state.project.files) };
+        save(STORE_PROJECT, state.project);
+        rebuild();
+        toast(`Reloaded ${plural(result.files.length, 'file')} from ${result.ref}.`);
+      } else {
+        $('githubDialog').close();
+        openProject(result.name, result.files, source);
+      }
+      if (result.truncated) toast('This repo is very large, so GitHub listed only part of it. If tables are missing, link to a smaller folder.');
+    } catch (err) {
+      const message = err instanceof window.ErdGitHub.GitHubError ? err.message : 'Something went wrong reading from GitHub.';
+      if (inDialog) setGitHubStatus(message, true);
+      else openGitHubDialog(link, message);
+    } finally {
+      $('ghSubmit').disabled = false;
+    }
+  }
+
+  function submitGitHub(e) {
+    e.preventDefault();
+    const link = $('ghUrl').value.trim();
+    if (!window.ErdGitHub.parseGitHubUrl(link)) {
+      setGitHubStatus("That isn't a GitHub repo link. Use github.com/owner/repo, or a folder link copied from GitHub.", true);
+      return;
+    }
+    const typed = $('ghTokenEntry').hidden ? '' : $('ghToken').value.trim();
+    loadFromGitHub(link, typed ? { token: typed, remember: $('ghRemember').checked } : {});
+  }
+
+  function forgetToken() {
+    try {
+      localStorage.removeItem(STORE_TOKEN);
+    } catch {
+      // storage unavailable; nothing was saved
+    }
+    state.token = null;
+    $('ghTokenSaved').hidden = true;
+    $('ghTokenEntry').hidden = false;
+    setGitHubStatus('The token was removed from this device. You can also delete it on GitHub.');
+  }
+
   function handleOpen(kind) {
     if (kind === 'folder') chooseFolder();
     else if (kind === 'files') $('filesInput').click();
+    else if (kind === 'github') openGitHubDialog();
     else if (kind === 'sample') {
       state.dirHandle = null;
       openProject(window.ErdSample.name, window.ErdSample.files);
@@ -703,7 +803,7 @@
     $('zoomControls').hidden = !has;
     $('btnFiles').hidden = !has;
     $('btnTables').hidden = !has;
-    $('btnReload').hidden = !state.dirHandle;
+    $('btnReload').hidden = !state.dirHandle && !(state.project && state.project.source);
     if (!has) return;
     const n = state.model.tables.length;
     $('projectName').textContent = `${state.project.name} · ${plural(n, 'table')}`;
@@ -736,7 +836,9 @@
 
     document.querySelectorAll('[data-open]').forEach((b) => b.addEventListener('click', () => handleOpen(b.dataset.open)));
     $('btnOpen').addEventListener('click', () => $('openDialog').showModal());
-    $('btnReload').addEventListener('click', reloadFolder);
+    $('btnReload').addEventListener('click', reload);
+    $('githubForm').addEventListener('submit', submitGitHub);
+    $('ghForget').addEventListener('click', forgetToken);
     $('btnFiles').addEventListener('click', () => {
       renderFiles();
       $('filesDialog').showModal();
@@ -788,8 +890,11 @@
     });
 
     const saved = load(STORE_PROJECT);
-    if (saved && saved.files && saved.files.length) showProject(saved);
+    const linked = new URLSearchParams(location.search).get('github');
+    if (saved && saved.files && saved.files.length && (!linked || (saved.source && saved.source.link === linked))) showProject(saved);
     else renderAll();
+    // A ?github= link always fetches the latest files.
+    if (linked) loadFromGitHub(linked, { reload: !!(saved && saved.source && saved.source.link === linked) });
   }
 
   init();
