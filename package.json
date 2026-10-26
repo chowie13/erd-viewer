@@ -1,0 +1,13 @@
+{
+  "name": "erd-viewer",
+  "version": "0.1.0",
+  "description": "See a Postgres schema as an ERD by reading a project's .sql files.",
+  "private": true,
+  "scripts": {
+    "start": "node scripts/serve.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
