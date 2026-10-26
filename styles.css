@@ -308,6 +308,35 @@ code { font-family: var(--mono); font-size: 0.92em; }
 .warn-list li { overflow-wrap: anywhere; }
 #warnings h3 { margin: 14px 0 0; font-size: 14px; }
 
+.gh-form { display: flex; flex-direction: column; gap: 10px; }
+.gh-form .hint { margin: -4px 0 0; }
+.field { display: flex; flex-direction: column; gap: 4px; font-weight: 600; font-size: 13px; }
+.field .muted { font-weight: 400; }
+.field input {
+  width: 100%;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font: 400 15px var(--font);
+}
+.field input:focus { outline: 2px solid var(--accent); outline-offset: 0; border-color: var(--accent); }
+#ghTokenEntry { display: flex; flex-direction: column; gap: 8px; }
+.check { display: flex; align-items: center; gap: 8px; font-size: 13.5px; cursor: pointer; }
+.check input { width: 16px; height: 16px; }
+.token-saved { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 10px 12px; border-radius: 8px; background: var(--accent-soft); font-size: 13.5px; }
+.token-help { color: var(--muted); font-size: 13px; }
+.token-help summary { color: var(--accent); cursor: pointer; }
+.token-help ol { margin: 8px 0; padding-left: 20px; }
+.token-help li { margin: 3px 0; }
+.token-help a { color: var(--accent); }
+.token-help p { margin: 0; }
+.gh-status { min-height: 1.4em; margin: 0; color: var(--muted); font-size: 13.5px; overflow-wrap: anywhere; }
+.gh-status.error { color: var(--warn); }
+.dialog-actions { display: flex; justify-content: flex-end; }
+
 .toast {
   position: fixed;
   left: 50%;
