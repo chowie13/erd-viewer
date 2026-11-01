@@ -3,6 +3,7 @@
   'use strict';
 
   const P = window.ErdParser;
+  const G = window.ErdGroups;
   const $ = (id) => document.getElementById(id);
 
   const FONT = '-apple-system, "Segoe UI", system-ui, Roboto, sans-serif';
@@ -23,6 +24,7 @@
   const STORE_TOKEN = 'erd-viewer:github-token';
   const STORE_GITHUB_LINK = 'erd-viewer:github-link';
   const layoutKey = (name) => 'erd-viewer:layout:' + name;
+  const groupsKey = (name) => 'erd-viewer:groups:' + name;
 
   const state = {
     project: null, // { name, source, files: [{ path, text, include }] }; source is { type: 'github', link } or null
@@ -32,6 +34,9 @@
     size: {},
     selected: null,
     filter: 'all',
+    grouping: G.emptyView(), // groups and hidden tables for this project
+    editGroup: null, // id of the group whose tables are being chosen
+    groupMenu: null, // id of the group whose edit menu is open
     search: '',
     view: { x: 0, y: 0, k: 1 },
     dirHandle: null,
@@ -108,6 +113,9 @@
   function showProject(project) {
     state.project = project;
     state.pos = load(layoutKey(project.name)) || {};
+    state.grouping = G.normalize(load(groupsKey(project.name)));
+    state.editGroup = null;
+    state.groupMenu = null;
     state.selected = null;
     $('openDialog').close();
     rebuild();
@@ -425,6 +433,10 @@
     save(layoutKey(state.project.name), keep);
   }
 
+  function saveGrouping() {
+    if (state.project) save(groupsKey(state.project.name), state.grouping);
+  }
+
   function tidy() {
     state.pos = {};
     placeNewTables();
@@ -440,7 +452,11 @@
     return t.key.toLowerCase().includes(q) || t.columns.some((c) => c.name.toLowerCase().includes(q));
   }
 
+  // Search and the Seed rows filter only fade tables; hidden tables leave the diagram.
   const isVisible = (t) => matchesSearch(t) && (state.filter !== 'seed' || hasSeed(t));
+  const isShown = (t) => G.isShown(state.grouping, t.key);
+  const shownKeys = () => state.model.tables.filter(isShown).map((t) => t.key);
+  const groupColor = (g) => `var(--${g.color})`;
 
   function relatedKeys(key) {
     const t = state.byKey.get(key);
@@ -461,8 +477,14 @@
     else if (related.has(t.key)) cls.push('related');
     if (!isVisible(t)) cls.push('dim');
 
+    const groups = G.groupsOf(state.grouping, t.key);
     let h = `<g class="${cls.join(' ')}" data-key="${esc(t.key)}" transform="translate(${p.x},${p.y})">`;
-    h += `<title>${esc(t.key)}</title>`;
+    h += `<title>${esc(t.key)}${groups.length ? `\nGroups: ${esc(groups.map((g) => g.name).join(', '))}` : ''}</title>`;
+    // One extra outer border per group, in the group's colour, the first group innermost.
+    for (let i = groups.length - 1; i >= 0; i--) {
+      const o = 3.5 + i * 4.5;
+      h += `<rect class="node-group" style="--c:${groupColor(groups[i])}" x="${-o}" y="${-o}" width="${s.w + o * 2}" height="${s.h + o * 2}" rx="${8 + o}"/>`;
+    }
     h += `<rect class="node-box" width="${s.w}" height="${s.h}" rx="8"/>`;
     h += `<path class="node-head" d="M0.5,8.5 a8,8 0 0 1 8,-8 h${s.w - 17} a8,8 0 0 1 8,8 v${HEADER - 8.5} h${-(s.w - 1)} z"/>`;
     h += `<text class="node-title" x="${PAD}" y="22">${esc(t.name)}</text>`;
@@ -512,7 +534,11 @@
   function drawEdges() {
     let h = '';
     for (const t of state.model.tables) {
-      for (const fk of t.fks) if (!fk.missing && state.byKey.has(fk.refTable)) h += edgeSvg(t, fk);
+      if (!isShown(t)) continue;
+      for (const fk of t.fks) {
+        const parent = !fk.missing && state.byKey.get(fk.refTable);
+        if (parent && isShown(parent)) h += edgeSvg(t, fk);
+      }
     }
     $('edges').innerHTML = h;
   }
@@ -520,7 +546,7 @@
   function renderDiagram() {
     const related = state.selected ? relatedKeys(state.selected) : new Set();
     // Draw the selected table last so it sits on top.
-    const tables = state.model.tables.slice().sort((a, b) => (a.key === state.selected) - (b.key === state.selected));
+    const tables = state.model.tables.filter(isShown).sort((a, b) => (a.key === state.selected) - (b.key === state.selected));
     $('nodes').innerHTML = tables.map((t) => nodeSvg(t, related)).join('');
     drawEdges();
   }
@@ -544,7 +570,7 @@
   }
 
   function fit() {
-    const b = bounds(state.model ? state.model.tables.map((t) => t.key) : []);
+    const b = bounds(state.model ? shownKeys() : []);
     if (!b) return;
     const r = $('diagram').getBoundingClientRect();
     const pad = 32;
@@ -560,7 +586,8 @@
   function centerOn(key) {
     const p = state.pos[key];
     const s = state.size[key];
-    if (!p) return;
+    const t = state.byKey.get(key);
+    if (!p || !t || !isShown(t)) return;
     const r = $('diagram').getBoundingClientRect();
     const v = state.view;
     v.k = Math.max(v.k, 0.7);
@@ -678,22 +705,144 @@
 
   // ---------- Table list ----------
 
+  function dotsHtml(groups) {
+    if (!groups.length) return '';
+    return `<span class="dots" title="${esc(groups.map((g) => g.name).join(', '))}">${groups.map((g) => `<span class="dot" style="--c:${groupColor(g)}"></span>`).join('')}</span>`;
+  }
+
+  function groupMenuHtml(g) {
+    const swatches = G.PALETTE.map((c, i) => `<button type="button" class="swatch" style="--c:var(--${c})" data-group-color="${c}" aria-label="Colour ${i + 1}" aria-pressed="${c === g.color}"></button>`).join('');
+    return `<li class="group-menu">
+        <input type="text" data-group-rename="${esc(g.id)}" value="${esc(g.name)}" aria-label="Group name" maxlength="60">
+        <div class="swatches" role="group" aria-label="Colour">${swatches}</div>
+        <div class="row">
+          <button type="button" class="link" data-group-tables="${esc(g.id)}">Choose tables</button>
+          <button type="button" class="link danger" data-group-delete="${esc(g.id)}">Delete group</button>
+        </div>
+      </li>`;
+  }
+
+  function renderGroups() {
+    const v = state.grouping;
+    const existing = new Set(state.byKey.keys());
+    if (!v.groups.length) {
+      $('groupList').innerHTML = '<li class="group-empty">No groups yet.</li>';
+      return;
+    }
+    $('groupList').innerHTML = v.groups.map((g) => {
+      const n = g.tables.filter((k) => existing.has(k)).length;
+      const st = G.groupState(v, g.id, existing);
+      const open = state.groupMenu === g.id;
+      return `<li class="group-row${state.editGroup === g.id ? ' editing' : ''}">
+          <label><input type="checkbox" data-group-show="${esc(g.id)}"${st !== 'off' ? ' checked' : ''}${st === 'mixed' ? ' data-mixed' : ''}>
+            <span class="dot" style="--c:${groupColor(g)}"></span>
+            <span class="g-name">${esc(g.name)}</span>
+            <span class="t-meta">${n}</span></label>
+          <button type="button" class="menu-btn" data-group-menu="${esc(g.id)}" aria-expanded="${open}" aria-label="Edit ${esc(g.name)}">⋯</button>
+        </li>${open ? groupMenuHtml(g) : ''}`;
+    }).join('');
+    document.querySelectorAll('#groupList [data-mixed]').forEach((el) => { el.indeterminate = true; });
+  }
+
+  // The tables the list shows right now (search and the Seed rows filter apply).
+  const listedTables = () => state.model.tables.filter(isVisible).sort((a, b) => a.key.localeCompare(b.key));
+
   function renderList() {
     const tables = state.model.tables;
     $('countAll').textContent = tables.length;
     $('countSeed').textContent = tables.filter(hasSeed).length;
     document.querySelectorAll('.chip').forEach((c) => c.setAttribute('aria-pressed', String(c.dataset.filter === state.filter)));
+    renderGroups();
 
-    const shown = tables.filter(isVisible).sort((a, b) => a.key.localeCompare(b.key));
+    const editing = state.editGroup && state.grouping.groups.find((g) => g.id === state.editGroup);
+    if (!editing) state.editGroup = null;
+    $('listTitle').textContent = editing ? `Tables in ${editing.name}` : 'Tables';
+    $('listTitle').parentElement.classList.toggle('editing', !!editing);
+    $('editDone').hidden = !editing;
+
+    const shown = listedTables();
     if (!shown.length) {
       const why = state.filter === 'seed' && !state.search ? 'No tables have seed rows.' : 'No tables match.';
       $('tableList').innerHTML = `<li class="list-empty">${why}</li>`;
       return;
     }
-    $('tableList').innerHTML = shown.map((t) => `<li><button type="button" data-key="${esc(t.key)}"${t.key === state.selected ? ' aria-current="true"' : ''}>
+    $('tableList').innerHTML = shown.map((t) => {
+      const on = isShown(t);
+      const groups = G.groupsOf(state.grouping, t.key);
+      const tick = editing
+        ? `<input type="checkbox" data-member="${esc(t.key)}"${editing.tables.includes(t.key) ? ' checked' : ''} aria-label="${esc(t.key)} in ${esc(editing.name)}">`
+        : `<input type="checkbox" data-show="${esc(t.key)}"${on ? ' checked' : ''} aria-label="Show ${esc(t.key)}">`;
+      return `<li class="t-row${on ? '' : ' off'}">${tick}<button type="button" data-key="${esc(t.key)}"${t.key === state.selected ? ' aria-current="true"' : ''}>
         <span class="t-name">${esc(t.key)}</span>
+        ${dotsHtml(groups)}
         ${hasSeed(t) ? `<span class="badge seed">${esc(seedLabel(t))}</span>` : `<span class="t-meta">${plural(t.columns.length, 'col')}</span>`}
-      </button></li>`).join('');
+      </button></li>`;
+    }).join('');
+  }
+
+  // After a show/hide or group change: redraw, remember, and fix the counts.
+  function groupingChanged() {
+    saveGrouping();
+    renderDiagram();
+    renderList();
+    renderDetails();
+    renderProjectName();
+  }
+
+  function newGroup() {
+    const name = window.prompt('Name for the new group');
+    if (name === null) return;
+    const g = G.createGroup(state.grouping, name);
+    state.editGroup = g.id;
+    state.groupMenu = null;
+    groupingChanged();
+    toast(`Tick the tables to put in ${g.name}, then press Done.`);
+  }
+
+  function onPanelChange(e) {
+    const el = e.target;
+    const v = state.grouping;
+    if (el.dataset.groupShow) G.setGroupShown(v, el.dataset.groupShow, el.checked);
+    else if (el.dataset.show) G.setTableShown(v, el.dataset.show, el.checked);
+    else if (el.dataset.member) G.setMembership(v, state.editGroup, el.dataset.member, el.checked);
+    else if (el.dataset.groupRename) {
+      // Update in place: re-rendering the list here would swallow a click that caused the blur.
+      const g = G.renameGroup(v, el.dataset.groupRename, el.value).groups.find((x) => x.id === el.dataset.groupRename);
+      el.value = g.name;
+      const row = el.closest('.group-menu').previousElementSibling;
+      row.querySelector('.g-name').textContent = g.name;
+      if (state.editGroup === g.id) $('listTitle').textContent = `Tables in ${g.name}`;
+      saveGrouping();
+      renderDiagram();
+      renderDetails();
+      return;
+    } else return;
+    groupingChanged();
+  }
+
+  function onPanelClick(e) {
+    const v = state.grouping;
+    const b = e.target.closest('button');
+    if (!b) return;
+    const d = b.dataset;
+    if (d.groupMenu) state.groupMenu = state.groupMenu === d.groupMenu ? null : d.groupMenu;
+    else if (d.groupColor) G.setGroupColor(v, state.groupMenu, d.groupColor);
+    else if (d.groupTables) {
+      state.editGroup = d.groupTables;
+      state.groupMenu = null;
+    } else if (d.groupDelete) {
+      const g = v.groups.find((x) => x.id === d.groupDelete);
+      if (!g || !window.confirm(`Delete the group "${g.name}"? Its tables stay.`)) return;
+      G.deleteGroup(v, g.id);
+      state.groupMenu = null;
+    } else if (d.select) {
+      const keys = listedTables().map((t) => t.key);
+      if (state.editGroup) G.setMembershipMany(v, state.editGroup, keys, d.select === 'all');
+      else G.setTablesShown(v, keys, d.select === 'all');
+    } else if (b.id === 'editDone') state.editGroup = null;
+    else if (b.id === 'newGroup') return newGroup();
+    else return;
+    groupingChanged();
   }
 
   // ---------- Details ----------
@@ -759,6 +908,9 @@
     let h = `<div class="details-head"><div><h2>${esc(t.name)}</h2>
       <div class="sub">${t.schema !== 'public' ? `schema ${esc(t.schema)} · ` : ''}${plural(t.columns.length, 'column')} · defined in ${esc(t.file)}</div></div>
       <button type="button" class="btn icon-btn" id="closeDetails" aria-label="Close details">✕</button></div>`;
+    if (!isShown(t)) h += `<section class="section hidden-note"><span class="muted">Hidden on the diagram.</span> <button type="button" class="btn small" id="showSelected">Show it</button></section>`;
+    const groups = G.groupsOf(state.grouping, t.key);
+    if (groups.length) h += `<section class="section"><div class="group-tags">${groups.map((g) => `<span class="group-tag"><span class="dot" style="--c:${groupColor(g)}"></span>${esc(g.name)}</span>`).join('')}</div></section>`;
     if (t.comment) h += `<section class="section"><p class="comment">${esc(t.comment)}</p></section>`;
     h += seedSection(t);
     h += `<section class="section"><h3>Columns</h3><ul class="col-list">${t.columns.map((c) => columnItem(t, c)).join('')}</ul></section>`;
@@ -796,6 +948,12 @@
 
   // ---------- Page ----------
 
+  function renderProjectName() {
+    const n = state.model.tables.length;
+    const hidden = n - shownKeys().length;
+    $('projectName').textContent = `${state.project.name} · ${plural(n, 'table')}${hidden ? ` · ${hidden} hidden` : ''}`;
+  }
+
   function renderAll() {
     const has = !!state.model;
     $('empty').hidden = has;
@@ -805,8 +963,7 @@
     $('btnTables').hidden = !has;
     $('btnReload').hidden = !state.dirHandle && !(state.project && state.project.source);
     if (!has) return;
-    const n = state.model.tables.length;
-    $('projectName').textContent = `${state.project.name} · ${plural(n, 'table')}`;
+    renderProjectName();
     const w = state.model.warnings.length;
     $('btnFiles').innerHTML = `Files${w ? ` <span class="warn-count" title="${plural(w, 'warning')}">⚠ ${w}</span>` : ''}`;
     renderDiagram();
@@ -862,6 +1019,8 @@
       renderList();
     });
     document.querySelectorAll('.chip').forEach((c) => c.addEventListener('click', () => setFilter(c.dataset.filter)));
+    $('tablesPanel').addEventListener('change', onPanelChange);
+    $('tablesPanel').addEventListener('click', onPanelClick);
     $('tableList').addEventListener('click', (e) => {
       const b = e.target.closest('button[data-key]');
       if (!b) return;
@@ -870,6 +1029,11 @@
     });
     $('details').addEventListener('click', (e) => {
       if (e.target.closest('#closeDetails')) return select(null);
+      if (e.target.closest('#showSelected')) {
+        G.setTableShown(state.grouping, state.selected, true);
+        groupingChanged();
+        return centerOn(state.selected);
+      }
       const link = e.target.closest('[data-goto]');
       if (link) select(link.dataset.goto, { center: true });
     });

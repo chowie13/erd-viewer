@@ -4,6 +4,8 @@ See a Postgres database as an entity relationship diagram by reading a project's
 
 - **Diagram:** every table with its columns, types, primary keys (PK) and foreign keys (FK). Lines join each foreign key to the table it points to, with a crow's foot on the "many" end. Drag tables to arrange them (the layout is remembered), and drag the background or pinch to pan and zoom.
 - **Seed rows:** tables that the project fills with rows of its own (`INSERT` statements or `COPY` blocks in its `.sql` files) get an orange badge. The **Seed rows** filter lists only those tables. Click one to see the rows and the files they come from.
+- **Groups:** put tables into named, colour-coded groups. A table can be in several groups and gets an extra coloured border on the diagram for each one.
+- **Show and hide:** tick or untick tables, or a whole group, to take them (and their lines) off the diagram. **Select all** and **Select none** do every listed table at once.
 - **Details:** click a table to see its columns, defaults, enum values, comments, relationships, keys and indexes.
 
 Your files are read in the browser and never uploaded.
@@ -27,6 +29,17 @@ The last project you opened is remembered on that device.
 - The address bar then shows a link like `…/erd-viewer/?github=github.com/owner/repo/tree/main/db`. Bookmark it, or add it to your phone's home screen, and it opens that folder with the latest files every time. On a new device, the first visit to a private repo link asks for the token.
 
 A remembered token is stored in the browser for `chowie13.github.io`, which every GitHub Pages site on this account shares. So keep it read-only and limited to the repos you need, and give it an expiry date.
+
+### Groups and hiding tables
+
+The left panel has a **Groups** list above the tables.
+
+- **+ New group** asks for a name, then lets you tick the tables to put in it. Press **Done** when you're finished. Each new group gets the next colour.
+- **⋯** next to a group: rename it, pick another colour, **Choose tables** again, or delete it (its tables stay).
+- The tick next to a table shows or hides it. Hidden tables and their lines leave the diagram, and **Fit** fits only the tables that are shown. A hidden table stays in the list, and clicking it still opens its details, with a **Show it** button.
+- The tick next to a group shows or hides all its tables. It's partly ticked when some of them are hidden. Whatever you clicked last wins, so hiding one group hides a table even if its other group is shown.
+- **Select all** and **Select none** act on the tables listed right now, so with a search typed in (say `grow`) they show or hide only the matching tables. While choosing a group's tables they add or remove all listed tables instead.
+- Groups and hidden tables are remembered on that device for each project, like the layout. If a table disappears for a while (for example you untick its file), it comes back in its groups.
 
 ### Which files are read, and in what order
 
@@ -54,7 +67,8 @@ npm test    # all tests
 | `index.html`, `styles.css` | The page (light and dark mode follow the device) |
 | `js/parser.js` | Reads `.sql` text into tables, columns, keys, indexes and seed rows. Works in the browser and in Node. |
 | `js/github.js` | Fetches a repo folder's `.sql` files from GitHub (public, or private with a token). Works in the browser and in Node. |
-| `js/app.js` | Opening files, the diagram (SVG), the table list, the details panel |
+| `js/groups.js` | Table groups and which tables are shown. Works in the browser and in Node. |
+| `js/app.js` | Opening files, the diagram (SVG), the table list and groups panel, the details panel |
 | `js/sample.js` | The "Try the sample" project |
-| `test/parser.test.js`, `test/github.test.js` | Tests (`node --test`); the GitHub tests use a fake GitHub, so they run offline |
+| `test/parser.test.js`, `test/github.test.js`, `test/groups.test.js` | Tests (`node --test`); the GitHub tests use a fake GitHub, so they run offline |
 | `scripts/serve.js` | A tiny local server for `npm start` |
