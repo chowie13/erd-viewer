@@ -31,7 +31,24 @@
           <button class="chip" type="button" data-filter="seed">Seed rows <span id="countSeed"></span></button>
         </div>
       </div>
-      <ul id="tableList" class="table-list"></ul>
+      <div class="panel-scroll">
+        <section class="groups" aria-label="Groups">
+          <div class="sec-head">
+            <h3>Groups</h3>
+            <button id="newGroup" class="link" type="button">+ New group</button>
+          </div>
+          <ul id="groupList" class="group-list"></ul>
+        </section>
+        <div class="list-head">
+          <h3 id="listTitle">Tables</h3>
+          <div class="list-actions">
+            <button class="link" type="button" data-select="all">Select all</button>
+            <button class="link" type="button" data-select="none">Select none</button>
+            <button id="editDone" class="btn small primary" type="button" hidden>Done</button>
+          </div>
+        </div>
+        <ul id="tableList" class="table-list"></ul>
+      </div>
     </aside>
 
     <main class="canvas">
@@ -133,6 +150,7 @@
 
   <script src="js/parser.js"></script>
   <script src="js/github.js"></script>
+  <script src="js/groups.js"></script>
   <script src="js/sample.js"></script>
   <script src="js/app.js"></script>
 </body>
