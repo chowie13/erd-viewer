@@ -474,3 +474,38 @@ code { font-family: var(--mono); font-size: 0.92em; }
 .hidden-note { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .group-tags { display: flex; flex-wrap: wrap; gap: 6px; }
 .group-tag { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border: 1px solid var(--line); border-radius: 999px; font-size: 12.5px; }
+
+/* ---------- Layouts ---------- */
+.layout-row { display: flex; align-items: center; gap: 6px; padding: 2px 10px 0 14px; }
+.layout-row select {
+  flex: 1;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+.layout-row .menu-btn {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  font: 600 15px var(--font);
+  cursor: pointer;
+}
+.layout-row .menu-btn:hover, .layout-row .menu-btn[aria-expanded="true"] { background: var(--surface-2); color: var(--text); }
+.layout-save { padding: 6px 14px 0; }
+.layout-save:has(> [hidden]) { display: none; }
+.layout-save .btn { width: 100%; }
+.layout-menu { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 8px 14px 0; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); font-size: 13.5px; }
+.layout-menu[hidden] { display: none; }
+.layout-status { margin: 4px 14px 0; color: var(--warn); font-size: 12.5px; }
+.layout-status:empty { display: none; }
+#conflictDialog p, #conflictDialog .field, #tokenDialog .gh-form { margin: 0 0 12px; }
+#conflictDialog .dialog-actions { gap: 8px; }

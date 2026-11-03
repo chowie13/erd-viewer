@@ -32,6 +32,21 @@
         </div>
       </div>
       <div class="panel-scroll">
+        <section class="layouts" aria-label="Layout">
+          <div class="sec-head"><h3>Layout</h3></div>
+          <div class="layout-row">
+            <select id="layoutSelect" aria-label="Layout"></select>
+            <button id="layoutMenuBtn" class="menu-btn" type="button" aria-label="Layout options" aria-expanded="false">⋯</button>
+          </div>
+          <div class="layout-save"><button id="layoutSave" class="btn small" type="button" hidden>Save to GitHub</button></div>
+          <div id="layoutMenu" class="layout-menu" hidden>
+            <button class="link" type="button" data-layout="new">New layout</button>
+            <button class="link" type="button" data-layout="rename">Rename</button>
+            <button class="link" type="button" data-layout="download">Download file</button>
+            <button class="link danger" type="button" data-layout="delete">Delete</button>
+          </div>
+          <p id="layoutStatus" class="layout-status" role="status"></p>
+        </section>
         <section class="groups" aria-label="Groups">
           <div class="sec-head">
             <h3>Groups</h3>
@@ -123,6 +138,7 @@
             <li>Under <b>Permissions → Repository permissions</b>, set <b>Contents</b> to <b>Read-only</b>.</li>
             <li>Click <b>Generate token</b>, copy it and paste it above.</li>
           </ol>
+          <p>To also save layouts to the repo, set <b>Contents</b> to <b>Read and write</b> instead.</p>
           <p>The token stays in this browser and is sent only to GitHub. Anyone using this browser could use it to read those repos, so give it access only to the repos you need.</p>
         </details>
       </div>
@@ -144,6 +160,43 @@
     <div id="warnings"></div>
   </dialog>
 
+  <dialog id="conflictDialog" class="dialog">
+    <form method="dialog" class="dialog-head">
+      <h2>Different layout</h2>
+      <button class="btn icon-btn" aria-label="Decide later">✕</button>
+    </form>
+    <p id="conflictText"></p>
+    <p class="hint">Use the repo's copy and discard this device's, or keep this device's under a new name (on this device only).</p>
+    <label class="field">
+      <span>New name for this device's copy</span>
+      <input id="conflictName" type="text" autocomplete="off" maxlength="60">
+    </label>
+    <p id="conflictError" class="gh-status error" role="status"></p>
+    <div class="dialog-actions">
+      <button id="conflictRename" class="btn" type="button">Rename mine</button>
+      <button id="conflictUseRepo" class="btn primary" type="button">Use the repo's</button>
+    </div>
+  </dialog>
+
+  <dialog id="tokenDialog" class="dialog">
+    <form method="dialog" class="dialog-head">
+      <h2>Save to GitHub</h2>
+      <button class="btn icon-btn" aria-label="Close">✕</button>
+    </form>
+    <form id="tokenForm" class="gh-form">
+      <p id="tokenError" class="gh-status error" role="status"></p>
+      <label class="field">
+        <span>Access token with Contents: Read and write</span>
+        <input id="tokenInput" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="github_pat_…" required>
+      </label>
+      <label class="check"><input id="tokenRemember" type="checkbox" checked> Remember it on this device</label>
+      <p class="hint">Make a <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">fine-grained token</a> with <b>Only select repositories</b> (just this repo) and <b>Contents</b> set to <b>Read and write</b>. It replaces a read-only token you saved, and is sent only to GitHub. Saving commits <code>erd-layouts.json</code> to the branch you opened.</p>
+      <div class="dialog-actions">
+        <button class="btn primary" type="submit">Save</button>
+      </div>
+    </form>
+  </dialog>
+
   <div id="toast" class="toast" role="status" hidden></div>
   <input id="folderInput" type="file" webkitdirectory multiple hidden>
   <input id="filesInput" type="file" multiple hidden>
@@ -151,6 +204,7 @@
   <script src="js/parser.js"></script>
   <script src="js/github.js"></script>
   <script src="js/groups.js"></script>
+  <script src="js/layouts.js"></script>
   <script src="js/sample.js"></script>
   <script src="js/app.js"></script>
 </body>
