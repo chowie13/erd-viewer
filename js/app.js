@@ -4,6 +4,8 @@
 
   const P = window.ErdParser;
   const G = window.ErdGroups;
+  const L = window.ErdLayouts;
+  const GH = window.ErdGitHub;
   const $ = (id) => document.getElementById(id);
 
   const FONT = '-apple-system, "Segoe UI", system-ui, Roboto, sans-serif';
@@ -25,6 +27,10 @@
   const STORE_GITHUB_LINK = 'erd-viewer:github-link';
   const layoutKey = (name) => 'erd-viewer:layout:' + name;
   const groupsKey = (name) => 'erd-viewer:groups:' + name;
+  // Layouts (groups + positions) and hidden tables, per project. The two keys above are
+  // from before layouts existed; they're read once to make the first layout.
+  const layoutsKey = (name) => 'erd-viewer:layouts:' + name;
+  const hiddenKey = (name) => 'erd-viewer:hidden:' + name;
 
   const state = {
     project: null, // { name, source, files: [{ path, text, include }] }; source is { type: 'github', link } or null
@@ -34,7 +40,9 @@
     size: {},
     selected: null,
     filter: 'all',
-    grouping: G.emptyView(), // groups and hidden tables for this project
+    layouts: L.normalizeState(null), // { current, layouts } for this project
+    grouping: G.emptyView(), // the current layout's groups, and this device's hidden tables
+    fileError: null, // why the project's erd-layouts.json couldn't be used, if it couldn't
     editGroup: null, // id of the group whose tables are being chosen
     groupMenu: null, // id of the group whose edit menu is open
     search: '',
@@ -102,20 +110,24 @@
   function openProject(name, files, source = null) {
     if (!files.length) {
       toast('No .sql files found there.');
-      return;
+      return false;
     }
     setLinkParam(source ? source.link : null);
     const project = { name, source, files: prepareFiles(files) };
     if (!save(STORE_PROJECT, project)) toast('Loaded. This project is too big to remember after you close the page.');
     showProject(project);
+    return true;
   }
 
   function showProject(project) {
     state.project = project;
-    state.pos = load(layoutKey(project.name)) || {};
-    state.grouping = G.normalize(load(groupsKey(project.name)));
-    state.editGroup = null;
-    state.groupMenu = null;
+    const stored = load(layoutsKey(project.name));
+    const old = stored ? null : load(groupsKey(project.name));
+    state.layouts = stored ? L.normalizeState(stored) : L.fromOld(old, load(layoutKey(project.name)));
+    const hidden = load(hiddenKey(project.name)) || (old && old.hidden) || [];
+    state.grouping = G.normalize({ hidden });
+    state.fileError = null;
+    useCurrentLayout();
     state.selected = null;
     $('openDialog').close();
     rebuild();
@@ -147,6 +159,15 @@
     return out;
   }
 
+  // The folder's erd-layouts.json (top level only), or null.
+  async function readFolderLayouts(handle) {
+    try {
+      return await (await (await handle.getFileHandle(L.FILE_NAME)).getFile()).text();
+    } catch {
+      return null;
+    }
+  }
+
   async function chooseFolder() {
     if (window.showDirectoryPicker) {
       let handle;
@@ -156,7 +177,8 @@
         return; // cancelled
       }
       state.dirHandle = handle;
-      openProject(handle.name, await readDirectory(handle, ''));
+      const files = await readDirectory(handle, '');
+      if (openProject(handle.name, files)) await applyLayoutsFile(await readFolderLayouts(handle));
     } else {
       $('folderInput').click();
     }
@@ -172,6 +194,7 @@
       save(STORE_PROJECT, state.project);
       rebuild();
       toast(`Reloaded ${plural(files.length, 'file')}.`);
+      await applyLayoutsFile(await readFolderLayouts(handle));
     } catch {
       toast('Could not read the folder again. Choose it with Open.');
     }
@@ -182,6 +205,7 @@
     input.value = '';
     if (!list.length) return;
     const files = [];
+    let layoutsText;
     let name = 'Selected files';
     for (const f of list) {
       let path = (f.webkitRelativePath || f.name).replace(/\\/g, '/');
@@ -189,11 +213,12 @@
         name = path.split('/')[0];
         path = path.slice(name.length + 1);
       }
+      if (path === L.FILE_NAME) layoutsText = await f.text();
       if (!P.isSqlPath(path)) continue;
       files.push({ path, text: await f.text() });
     }
     state.dirHandle = null;
-    openProject(name, files);
+    if (openProject(name, files)) await applyLayoutsFile(layoutsText);
   }
 
   // ---------- GitHub ----------
@@ -247,7 +272,7 @@
       else if (opts.token) state.token = opts.token;
       save(STORE_GITHUB_LINK, result.link);
       state.dirHandle = null;
-      const source = { type: 'github', link: result.link };
+      const source = { type: 'github', link: result.link, owner: result.owner, repo: result.repo, ref: result.ref, folder: result.folder, layoutsPath: result.layoutsPath };
       if (opts.reload && state.project) {
         state.project = { name: result.name, source, files: prepareFiles(result.files, state.project.files) };
         save(STORE_PROJECT, state.project);
@@ -257,6 +282,7 @@
         $('githubDialog').close();
         openProject(result.name, result.files, source);
       }
+      await applyLayoutsFile(result.layoutsFile ? result.layoutsFile.text : null);
       if (result.truncated) toast('This repo is very large, so GitHub listed only part of it. If tables are missing, link to a smaller folder.');
     } catch (err) {
       const message = err instanceof window.ErdGitHub.GitHubError ? err.message : 'Something went wrong reading from GitHub.';
@@ -426,15 +452,343 @@
     saveLayout();
   }
 
-  function saveLayout() {
-    if (!state.project) return;
-    const keep = {};
-    for (const t of state.model.tables) keep[t.key] = state.pos[t.key];
-    save(layoutKey(state.project.name), keep);
+  // ---------- Layouts ----------
+
+  const currentLayout = () => L.currentLayout(state.layouts);
+
+  // Points the diagram at the current layout's groups and positions.
+  function useCurrentLayout() {
+    const cur = currentLayout();
+    state.grouping.groups = cur.groups;
+    state.pos = cur.positions;
+    state.editGroup = null;
+    state.groupMenu = null;
   }
 
-  function saveGrouping() {
-    if (state.project) save(groupsKey(state.project.name), state.grouping);
+  // Writes the diagram's groups and positions back into the current layout and remembers
+  // everything on this device. Positions of tables that are gone for now are kept.
+  function saveLayouts() {
+    if (!state.project) return;
+    const cur = currentLayout();
+    cur.groups = state.grouping.groups;
+    cur.positions = state.pos;
+    save(layoutsKey(state.project.name), state.layouts);
+    save(hiddenKey(state.project.name), state.grouping.hidden);
+    renderLayoutBar();
+  }
+
+  const saveLayout = saveLayouts;
+  const saveGrouping = saveLayouts;
+
+  // Where this project's erd-layouts.json lives, and whether this page can write it.
+  function fileHome() {
+    const src = state.project && state.project.source;
+    if (src && src.type === 'github') return { kind: 'github', canSave: !!src.owner, label: 'on GitHub', place: `${src.ref || 'GitHub'}` };
+    if (state.dirHandle) return { kind: 'folder', canSave: true, label: 'in the folder', place: 'the folder' };
+    return { kind: 'file', canSave: false, label: 'in the file', place: 'the file' };
+  }
+
+  function layoutStatus(l) {
+    if (!L.isShared(l)) return 'this device only';
+    return L.isDirty(l) ? 'unsaved changes' : fileHome().label;
+  }
+
+  function renderLayoutBar() {
+    if (!state.model) return;
+    const cur = currentLayout();
+    $('layoutSelect').innerHTML = state.layouts.layouts
+      .map((l) => `<option value="${esc(l.name)}"${l === cur ? ' selected' : ''}>${esc(l.name)} · ${esc(layoutStatus(l))}</option>`)
+      .join('');
+    const home = fileHome();
+    const needsSave = !L.isShared(cur) || L.isDirty(cur);
+    $('layoutSave').hidden = !home.canSave;
+    $('layoutSave').textContent = home.kind === 'github' ? 'Save to GitHub' : 'Save to folder';
+    $('layoutSave').classList.toggle('primary', needsSave);
+    $('layoutStatus').textContent = state.fileError ? `⚠ ${state.fileError}` : '';
+    $('layoutMenuBtn').setAttribute('aria-expanded', String(!$('layoutMenu').hidden));
+  }
+
+  function switchLayout(name) {
+    saveLayouts();
+    state.layouts.current = name;
+    useCurrentLayout();
+    placeNewTables();
+    renderAll();
+    fit();
+  }
+
+  // ----- Reading and writing erd-layouts.json -----
+
+  // Reads the GitHub or folder copy of the file: { text, sha } or null when there's none.
+  async function readHomeFile(token) {
+    const home = fileHome();
+    if (home.kind === 'github') {
+      const src = state.project.source;
+      return GH.getFile({ owner: src.owner, repo: src.repo, ref: src.ref, path: src.layoutsPath }, { token });
+    }
+    try {
+      const fh = await state.dirHandle.getFileHandle(L.FILE_NAME);
+      return { text: await (await fh.getFile()).text(), sha: null };
+    } catch (e) {
+      if (e && e.name === 'NotFoundError') return null;
+      throw e;
+    }
+  }
+
+  async function writeHomeFile(text, message, sha, token) {
+    if (fileHome().kind === 'github') {
+      const src = state.project.source;
+      return GH.saveFile({ owner: src.owner, repo: src.repo, ref: src.ref, path: src.layoutsPath, sha }, text, message, { token });
+    }
+    const fh = await state.dirHandle.getFileHandle(L.FILE_NAME, { create: true });
+    const w = await fh.createWritable();
+    await w.write(text);
+    await w.close();
+    return {};
+  }
+
+  // Brings in the file's layouts. `text` is the file, or null when the project has none
+  // (pass undefined to leave layouts alone, e.g. for picked files without the JSON file).
+  // Conflicts are asked about one at a time. Returns the merge result, or null.
+  async function applyLayoutsFile(text) {
+    if (text === undefined) return null;
+    let fileLayouts = [];
+    if (text !== null) {
+      const parsed = L.parseFile(text);
+      if (parsed.error) {
+        state.fileError = parsed.error;
+        renderLayoutBar();
+        toast(parsed.error);
+        return null;
+      }
+      fileLayouts = parsed.layouts;
+    }
+    state.fileError = null;
+    saveLayouts();
+    const before = state.layouts.current;
+    const beforeContent = L.canon(currentLayout());
+    const result = L.mergeFromFile(state.layouts, fileLayouts);
+    for (const name of result.conflicts) {
+      const theirs = L.byName(fileLayouts, name);
+      const choice = await askConflict(name);
+      if (choice === 'repo') L.resolveUseFile(state.layouts, theirs);
+      else if (choice && choice.rename) L.resolveRename(state.layouts, theirs, choice.rename);
+    }
+    useCurrentLayout();
+    placeNewTables();
+    saveLayouts();
+    renderAll();
+    // The tables moved if the layout changed, so show them all again.
+    if (state.layouts.current !== before || L.canon(currentLayout()) !== beforeContent) fit();
+    const notes = [];
+    if (result.added.length) notes.push(`Added ${plural(result.added.length, 'layout')} from ${L.FILE_NAME}.`);
+    if (result.untied.length) notes.push(`${result.untied.map((n) => `"${n}"`).join(', ')} is no longer in the file, so it's kept on this device only.`);
+    if (notes.length) toast(notes.join(' '));
+    return result;
+  }
+
+  // Resolves with 'repo', { rename: newName }, or null (decide later).
+  function askConflict(name) {
+    const dlg = $('conflictDialog');
+    $('conflictText').innerHTML = `The layout <b>${esc(name)}</b> ${esc(fileHome().label)} is different from the copy on this device.`;
+    $('conflictName').value = L.uniqueName(state.layouts, `${name} (this device)`);
+    $('conflictError').textContent = '';
+    return new Promise((resolve) => {
+      const done = (value) => {
+        dlg.removeEventListener('close', onClose);
+        $('conflictUseRepo').onclick = null;
+        $('conflictRename').onclick = null;
+        dlg.close();
+        resolve(value);
+      };
+      const onClose = () => done(null);
+      $('conflictUseRepo').onclick = () => done('repo');
+      $('conflictRename').onclick = () => {
+        const n = $('conflictName').value.trim();
+        if (!n || L.byName(state.layouts.layouts, n)) {
+          $('conflictError').textContent = n ? 'A layout already has that name.' : 'Type a name.';
+          return;
+        }
+        done({ rename: n });
+      };
+      dlg.addEventListener('close', onClose);
+      dlg.showModal();
+    });
+  }
+
+  // Resolves with { token, remember } or null.
+  function askToken(message) {
+    const dlg = $('tokenDialog');
+    $('tokenError').textContent = message || '';
+    $('tokenInput').value = '';
+    return new Promise((resolve) => {
+      const done = (value) => {
+        dlg.removeEventListener('close', onClose);
+        $('tokenForm').onsubmit = null;
+        dlg.close();
+        resolve(value);
+      };
+      const onClose = () => done(null);
+      $('tokenForm').onsubmit = (e) => {
+        e.preventDefault();
+        const token = $('tokenInput').value.trim();
+        if (token) done({ token, remember: $('tokenRemember').checked });
+      };
+      dlg.addEventListener('close', onClose);
+      dlg.showModal();
+      $('tokenInput').focus();
+    });
+  }
+
+  // Runs `work(token)` against the layouts file, asking for a token with write access when
+  // GitHub needs one (or refuses the one it has). A typed token is kept like the Open dialog's.
+  async function withWriteAccess(work) {
+    const home = fileHome();
+    if (home.kind === 'folder') {
+      const perm = await state.dirHandle.requestPermission({ mode: 'readwrite' });
+      if (perm !== 'granted') {
+        toast('Saving needs permission to change the folder.');
+        return false;
+      }
+      return work(null);
+    }
+    let token = state.token || savedToken();
+    let typed = null;
+    if (!token) {
+      typed = await askToken('Saving to GitHub needs a token with Contents set to Read and write.');
+      if (!typed) return false;
+      token = typed.token;
+    }
+    for (;;) {
+      try {
+        const out = await work(token);
+        if (typed) {
+          if (typed.remember) save(STORE_TOKEN, typed.token);
+          else state.token = typed.token;
+        }
+        return out;
+      } catch (err) {
+        const message = err instanceof GH.GitHubError ? err.message : "Couldn't save. Try again.";
+        if (!(err instanceof GH.GitHubError) || ![401, 403, 404].includes(err.status)) {
+          toast(message);
+          return false;
+        }
+        typed = await askToken(message);
+        if (!typed) return false;
+        token = typed.token;
+      }
+    }
+  }
+
+  async function saveCurrentToFile() {
+    const home = fileHome();
+    if (!home.canSave) return toast('Press Reload first, so the page knows where to save.');
+    saveLayouts();
+    const name = currentLayout().name;
+    $('layoutSave').disabled = true;
+    try {
+      await withWriteAccess(async (token) => {
+        // Read the latest copy first, so nothing someone else saved is lost.
+        const latest = await readHomeFile(token);
+        const result = await applyLayoutsFile(latest ? latest.text : null);
+        if (!result) return false; // the file couldn't be used; already reported
+        const cur = L.byName(state.layouts.layouts, name);
+        if (result.conflicts.includes(name) || !cur || state.layouts.current !== name) {
+          toast(`Nothing saved. Check "${state.layouts.current}" and save again if you want to.`);
+          return false;
+        }
+        if (L.isShared(cur) && !L.isDirty(cur)) {
+          toast(`"${name}" is already saved.`);
+          return true;
+        }
+        const fileLayouts = L.withLayout(L.parseFile(latest ? latest.text : '{"version":1,"layouts":[]}').layouts, cur);
+        await writeHomeFile(L.serializeFile(fileLayouts), `Update ERD layout "${name}"`, latest && latest.sha, token);
+        L.markSaved(cur);
+        saveLayouts();
+        toast(home.kind === 'github' ? `Saved "${name}" to GitHub (${home.place}).` : `Saved "${name}" to ${L.FILE_NAME} in the folder.`);
+        return true;
+      });
+    } finally {
+      $('layoutSave').disabled = false;
+    }
+  }
+
+  async function removeFromFile(name) {
+    return withWriteAccess(async (token) => {
+      const latest = await readHomeFile(token);
+      if (!latest) return true;
+      const parsed = L.parseFile(latest.text);
+      if (parsed.error) {
+        toast(parsed.error);
+        return false;
+      }
+      if (!L.byName(parsed.layouts, name)) return true;
+      await writeHomeFile(L.serializeFile(L.withoutLayout(parsed.layouts, name)), `Remove ERD layout "${name}"`, latest.sha, token);
+      return true;
+    });
+  }
+
+  function newLayout() {
+    const name = window.prompt('Name for the new layout (it starts as a copy of this one)', L.uniqueName(state.layouts, currentLayout().name + ' copy'));
+    if (name === null) return;
+    saveLayouts();
+    L.addLayout(state.layouts, name, currentLayout());
+    useCurrentLayout();
+    saveLayouts();
+    renderAll();
+  }
+
+  function renameLayout() {
+    const cur = currentLayout();
+    const name = window.prompt('New name for this layout', cur.name);
+    if (name === null || name.trim() === cur.name) return;
+    const oldName = cur.name;
+    const wasShared = L.isShared(cur);
+    if (!L.renameLayout(state.layouts, oldName, name)) return toast(name.trim() ? 'A layout already has that name.' : 'Type a name.');
+    saveLayouts();
+    renderAll();
+    if (wasShared) toast(`Renamed. ${L.FILE_NAME} still has "${oldName}", so it comes back next time unless you delete it there. Save this one to add it.`);
+  }
+
+  async function deleteCurrentLayout() {
+    const cur = currentLayout();
+    const home = fileHome();
+    if (!window.confirm(`Delete the layout "${cur.name}" from this device?`)) return;
+    if (L.isShared(cur) && home.canSave) {
+      const fromFile = window.confirm(`Also remove "${cur.name}" from ${L.FILE_NAME} ${home.kind === 'github' ? `on GitHub (${home.place})` : 'in the folder'}?\n\nIf you don't, it comes back the next time the file is read.`);
+      if (fromFile && !(await removeFromFile(cur.name))) return;
+    }
+    L.deleteLayout(state.layouts, cur.name);
+    useCurrentLayout();
+    placeNewTables();
+    saveLayouts();
+    renderAll();
+    fit();
+  }
+
+  function downloadLayouts() {
+    saveLayouts();
+    const blob = new Blob([L.serializeFile(state.layouts.layouts)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = L.FILE_NAME;
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    toast(`Downloaded ${L.FILE_NAME} with all ${plural(state.layouts.layouts.length, 'layout')} on this device. Put it in the project's folder and commit it.`);
+  }
+
+  function onLayoutMenu(e) {
+    const b = e.target.closest('button[data-layout]');
+    if (!b) return;
+    $('layoutMenu').hidden = true;
+    renderLayoutBar();
+    const action = b.dataset.layout;
+    if (action === 'new') newLayout();
+    else if (action === 'rename') renameLayout();
+    else if (action === 'download') downloadLayouts();
+    else if (action === 'delete') deleteCurrentLayout();
   }
 
   function tidy() {
@@ -956,6 +1310,7 @@
 
   function renderAll() {
     const has = !!state.model;
+    if (has) renderLayoutBar();
     $('empty').hidden = has;
     $('tablesPanel').hidden = !has;
     $('zoomControls').hidden = !has;
@@ -1020,6 +1375,13 @@
     });
     document.querySelectorAll('.chip').forEach((c) => c.addEventListener('click', () => setFilter(c.dataset.filter)));
     $('tablesPanel').addEventListener('change', onPanelChange);
+    $('layoutSelect').addEventListener('change', (e) => switchLayout(e.target.value));
+    $('layoutSave').addEventListener('click', saveCurrentToFile);
+    $('layoutMenuBtn').addEventListener('click', () => {
+      $('layoutMenu').hidden = !$('layoutMenu').hidden;
+      renderLayoutBar();
+    });
+    $('layoutMenu').addEventListener('click', onLayoutMenu);
     $('tablesPanel').addEventListener('click', onPanelClick);
     $('tableList').addEventListener('click', (e) => {
       const b = e.target.closest('button[data-key]');
